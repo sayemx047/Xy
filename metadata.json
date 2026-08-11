@@ -1,0 +1,6 @@
+{
+  "name": "Native APK Builder",
+  "description": "Build real Android APKs directly from your phone using GitHub Actions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
