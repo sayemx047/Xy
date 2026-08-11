@@ -1,527 +1,409 @@
 package com.example.ui.viewmodel
 
 import android.app.Application
-import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.data.api.models.GitHubRepo
-import com.example.data.api.models.GitHubWorkflow
-import com.example.data.api.models.WorkflowRun
-import com.example.data.auth.AuthState
-import com.example.data.auth.GitHubAuthManager
-import com.example.data.db.AppDatabase
-import com.example.data.db.BuildHistoryEntity
-import com.example.data.engine.GitHubActionsBuildEngine
-import com.example.data.installer.ApkInstaller
-import com.example.data.project.ProjectInfo
-import com.example.data.project.ProjectScanner
-import com.example.data.project.ProjectUploader
-import com.example.data.repository.GitHubRepository
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collectLatest
+import com.example.data.db.*
+import com.example.data.repository.AppRepository
+import com.example.utils.DeviceMonitor
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import java.io.File
 
-sealed class ActiveBuildState {
-    object Idle : ActiveBuildState()
-    data class UploadingProject(val stepMessage: String, val progress: Float) : ActiveBuildState()
-    object TriggeringWorkflow : ActiveBuildState()
-    data class PollingStatus(val runId: Long, val status: String, val conclusion: String?) : ActiveBuildState()
-    data class DownloadingArtifact(val runId: Long) : ActiveBuildState()
-    data class Success(val runId: Long, val apkFile: File, val artifactName: String) : ActiveBuildState()
-    data class Failed(val runId: Long?, val errorMessage: String, val logOutput: String? = null) : ActiveBuildState()
+sealed class Screen {
+    object Login : Screen()
+    object Home : Screen()
+    data class TournamentDetail(val tournamentId: String) : Screen()
+    object Wallet : Screen()
+    data class LiveChat(val contextKey: String = "GENERAL") : Screen()
+    object Profile : Screen()
+    object AdminPanel : Screen()
 }
 
-data class UiState(
-    val authState: AuthState = AuthState.Unauthenticated,
-    val selectedProject: ProjectInfo? = null,
-    val isScanningProject: Boolean = false,
-    val userRepositories: List<GitHubRepo> = emptyList(),
-    val isLoadingRepos: Boolean = false,
-    val selectedRepository: GitHubRepo? = null,
-    val discoveredWorkflows: List<GitHubWorkflow> = emptyList(),
-    val selectedWorkflow: GitHubWorkflow? = null,
-    val isLoadingWorkflows: Boolean = false,
-    val workflowErrorMessage: String? = null,
-    val buildType: String = "debug", // "debug" or "release"
-    val activeBuildState: ActiveBuildState = ActiveBuildState.Idle,
-    val buildLogsText: String? = null,
-    val showLogsModal: Boolean = false,
-    val buildHistory: List<BuildHistoryEntity> = emptyList(),
-    val currentTab: Int = 0, // 0 = Build, 1 = History, 2 = GitHub, 3 = Settings
-    val repoErrorMessage: String? = null,
-    val isCreatingRepo: Boolean = false
+data class UiAlert(
+    val title: String,
+    val message: String,
+    val isSuccess: Boolean
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
-    val authManager = GitHubAuthManager(application)
-    val gitHubRepo = GitHubRepository(authManager.apiService)
-    val projectScanner = ProjectScanner(application)
-    val projectUploader = ProjectUploader(application, authManager.apiService)
-    val buildEngine = GitHubActionsBuildEngine(authManager.apiService)
-    val apkInstaller = ApkInstaller(application)
-    val database = AppDatabase.getDatabase(application)
-    val buildHistoryDao = database.buildHistoryDao()
+    private val db = AppDatabase.getInstance(application)
+    val repository = AppRepository(db)
 
-    private val _uiState = MutableStateFlow(UiState())
-    val uiState: StateFlow<UiState> = _uiState.asStateFlow()
+    // User State
+    val loggedInUser: StateFlow<UserEntity?> = repository.loggedInUserFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
-    private var pollingJob: Job? = null
+    // Current Screen
+    private val _currentScreen = MutableStateFlow<Screen>(Screen.Login)
+    val currentScreen: StateFlow<Screen> = _currentScreen.asStateFlow()
+
+    // Alert Dialogs
+    private val _uiAlert = MutableStateFlow<UiAlert?>(null)
+    val uiAlert: StateFlow<UiAlert?> = _uiAlert.asStateFlow()
+
+    // Insufficient Balance Dialog Prompt ("Not enough credit. Wanna recharge?")
+    private val _showRechargePrompt = MutableStateFlow(false)
+    val showRechargePrompt: StateFlow<Boolean> = _showRechargePrompt.asStateFlow()
+
+    // Admin Mode Toggle for testing verification & notice broadcast
+    private val _isAdminMode = MutableStateFlow(false)
+    val isAdminMode: StateFlow<Boolean> = _isAdminMode.asStateFlow()
+
+    // Data Flows
+    val loginNotices: StateFlow<List<NoticeEntity>> = repository.loginNoticesFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val userNotices: StateFlow<List<NoticeEntity>> = loggedInUser
+        .flatMapLatest { user ->
+            if (user != null) repository.getUserNoticesFlow(user.email) else flowOf(emptyList())
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val userTransactions: StateFlow<List<WalletTransactionEntity>> = loggedInUser
+        .flatMapLatest { user ->
+            if (user != null) repository.getUserTransactionsFlow(user.email) else flowOf(emptyList())
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val allTransactions: StateFlow<List<WalletTransactionEntity>> = repository.allTransactionsFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val tournaments: StateFlow<List<TournamentEntity>> = repository.allTournamentsFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val userRegistrations: StateFlow<List<TournamentRegistrationEntity>> = loggedInUser
+        .flatMapLatest { user ->
+            if (user != null) repository.getUserRegistrationsFlow(user.email) else flowOf(emptyList())
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val userDeviceLog: StateFlow<DeviceLogEntity?> = loggedInUser
+        .flatMapLatest { user ->
+            if (user != null) repository.getDeviceLogFlow(user.email) else flowOf(null)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val allDeviceLogs: StateFlow<List<DeviceLogEntity>> = repository.allDeviceLogsFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
-        // Observe auth state
+        // Observe logged in user & sync device monitoring details
         viewModelScope.launch {
-            authManager.authState.collectLatest { auth ->
-                _uiState.value = _uiState.value.copy(authState = auth)
-                if (auth is AuthState.Authenticated) {
-                    loadUserRepositories(auth.token)
-                }
-            }
-        }
-
-        // Observe build history
-        viewModelScope.launch {
-            buildHistoryDao.getAllHistory().collectLatest { history ->
-                _uiState.value = _uiState.value.copy(buildHistory = history)
-            }
-        }
-    }
-
-    fun selectTab(tabIndex: Int) {
-        _uiState.value = _uiState.value.copy(currentTab = tabIndex)
-    }
-
-    fun startDeviceAuthFlow() {
-        authManager.startDeviceFlow()
-    }
-
-    fun cancelDeviceAuthFlow() {
-        authManager.cancelDeviceAuthFlow()
-    }
-
-    fun disconnectGitHub() {
-        authManager.disconnect()
-        _uiState.value = _uiState.value.copy(
-            userRepositories = emptyList(),
-            selectedRepository = null
-        )
-    }
-
-    fun loadUserRepositories(tokenOverride: String? = null) {
-        val token = tokenOverride ?: (authManager.authState.value as? AuthState.Authenticated)?.token ?: return
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoadingRepos = true, repoErrorMessage = null)
-            val res = gitHubRepo.listUserRepositories(token)
-            if (res.isSuccess) {
-                val repos = res.getOrDefault(emptyList())
-                val defaultRepo = repos.firstOrNull()
-                _uiState.value = _uiState.value.copy(
-                    userRepositories = repos,
-                    selectedRepository = _uiState.value.selectedRepository ?: defaultRepo,
-                    isLoadingRepos = false
-                )
-                if (_uiState.value.selectedRepository != null) {
-                    loadWorkflowsForSelectedRepo()
-                }
-            } else {
-                _uiState.value = _uiState.value.copy(
-                    isLoadingRepos = false,
-                    repoErrorMessage = res.exceptionOrNull()?.localizedMessage
-                )
-            }
-        }
-    }
-
-    fun selectRepository(repo: GitHubRepo) {
-        _uiState.value = _uiState.value.copy(selectedRepository = repo)
-        loadWorkflowsForSelectedRepo(repoOverride = repo)
-    }
-
-    fun loadWorkflowsForSelectedRepo(repoOverride: GitHubRepo? = null) {
-        val auth = authManager.authState.value as? AuthState.Authenticated ?: return
-        val repo = repoOverride ?: _uiState.value.selectedRepository ?: return
-        val owner = repo.owner?.login ?: auth.user.login
-
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(
-                isLoadingWorkflows = true,
-                workflowErrorMessage = null
-            )
-            val res = buildEngine.findWorkflows(auth.token, owner, repo.name)
-            if (res.isSuccess) {
-                var workflows: List<GitHubWorkflow> = res.getOrDefault(emptyList())
-                if (workflows.isEmpty()) {
-                    val ensureRes = buildEngine.ensureWorkflowExists(
-                        auth.token, owner, repo.name, repo.defaultBranch ?: "main"
-                    )
-                    if (ensureRes.isSuccess) {
-                        workflows = listOf(ensureRes.getOrThrow())
+            loggedInUser.collect { user ->
+                if (user != null) {
+                    if (_currentScreen.value == Screen.Login) {
+                        _currentScreen.value = Screen.Home
                     }
+                    val log = DeviceMonitor.captureDeviceDetails(getApplication(), user.email)
+                    repository.updateDeviceLog(log)
+                } else {
+                    _currentScreen.value = Screen.Login
                 }
+            }
+        }
 
-                val preferred = workflows.find { wf ->
-                    wf.path.contains("android", ignoreCase = true) || 
-                    wf.name.contains("Android", ignoreCase = true) || 
-                    wf.name.contains("APK", ignoreCase = true)
-                } ?: workflows.firstOrNull()
+        // Periodically purge chats older than 24h
+        viewModelScope.launch {
+            repository.autoPurgeOldChats(24)
+        }
+    }
 
-                _uiState.value = _uiState.value.copy(
-                    discoveredWorkflows = workflows,
-                    selectedWorkflow = preferred,
-                    isLoadingWorkflows = false,
-                    workflowErrorMessage = if (workflows.isEmpty()) "No build workflow found in repository." else null
+    fun navigateTo(screen: Screen) {
+        _currentScreen.value = screen
+    }
+
+    fun dismissAlert() {
+        _uiAlert.value = null
+    }
+
+    fun showRechargePrompt(show: Boolean) {
+        _showRechargePrompt.value = show
+    }
+
+    fun toggleAdminMode() {
+        _isAdminMode.value = !_isAdminMode.value
+    }
+
+    // --- Auth Actions ---
+    fun register(
+        email: String,
+        pass: String,
+        fname: String,
+        lname: String,
+        ffUid: String,
+        whatsapp: String,
+        savePass: Boolean
+    ) {
+        viewModelScope.launch {
+            val result = repository.registerUser(email, pass, fname, lname, ffUid, whatsapp, savePass)
+            result.onSuccess { user ->
+                _uiAlert.value = UiAlert(
+                    title = "Account Created!",
+                    message = "Welcome ${user.firstName}! Your account has been registered and credited with BDT 100 bonus.",
+                    isSuccess = true
                 )
-            } else {
-                _uiState.value = _uiState.value.copy(
-                    discoveredWorkflows = emptyList(),
-                    selectedWorkflow = null,
-                    isLoadingWorkflows = false,
-                    workflowErrorMessage = res.exceptionOrNull()?.localizedMessage ?: "Failed to list workflows."
+            }.onFailure { err ->
+                _uiAlert.value = UiAlert(
+                    title = "Registration Failed",
+                    message = err.message ?: "Could not register account.",
+                    isSuccess = false
                 )
             }
         }
     }
 
-    fun selectWorkflow(workflow: GitHubWorkflow) {
-        _uiState.value = _uiState.value.copy(selectedWorkflow = workflow)
-    }
-
-    fun createPrivateBuildRepository(repoName: String = "my-android-app") {
-        val token = (authManager.authState.value as? AuthState.Authenticated)?.token ?: return
+    fun login(email: String, pass: String, savePass: Boolean) {
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isCreatingRepo = true, repoErrorMessage = null)
-            val res = gitHubRepo.createPrivateBuildRepository(token, repoName)
-            if (res.isSuccess) {
-                val newRepo = res.getOrThrow()
-                val updatedRepos = _uiState.value.userRepositories + newRepo
-                _uiState.value = _uiState.value.copy(
-                    userRepositories = updatedRepos,
-                    selectedRepository = newRepo,
-                    isCreatingRepo = false
+            val result = repository.loginUser(email, pass, savePass)
+            result.onSuccess { user ->
+                _uiAlert.value = UiAlert(
+                    title = "Welcome Back!",
+                    message = "Successfully logged in as ${user.email}.",
+                    isSuccess = true
                 )
-                loadWorkflowsForSelectedRepo(repoOverride = newRepo)
-            } else {
-                _uiState.value = _uiState.value.copy(
-                    isCreatingRepo = false,
-                    repoErrorMessage = res.exceptionOrNull()?.localizedMessage ?: "Failed to create repository."
+            }.onFailure { err ->
+                _uiAlert.value = UiAlert(
+                    title = "Login Failed",
+                    message = err.message ?: "Incorrect Password/Email.",
+                    isSuccess = false
                 )
             }
         }
     }
 
-    fun scanFolder(treeUri: Uri) {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isScanningProject = true)
-            val info = projectScanner.scanFolder(treeUri)
-            _uiState.value = _uiState.value.copy(
-                selectedProject = info,
-                isScanningProject = false
-            )
-        }
-    }
-
-    fun scanZip(zipUri: Uri) {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isScanningProject = true)
-            val info = projectScanner.scanZip(zipUri)
-            _uiState.value = _uiState.value.copy(
-                selectedProject = info,
-                isScanningProject = false
-            )
-        }
-    }
-
-    fun setBuildType(type: String) {
-        _uiState.value = _uiState.value.copy(buildType = type)
-    }
-
-    fun startBuildProcess() {
-        val auth = authManager.authState.value as? AuthState.Authenticated
-        if (auth == null) {
-            _uiState.value = _uiState.value.copy(
-                activeBuildState = ActiveBuildState.Failed(null, "GitHub account is not connected. Please connect your GitHub account first.")
+    fun resetPasswordDirectly(email: String, newPass: String) {
+        val targetEmail = email.trim()
+        if (targetEmail.isEmpty() || newPass.trim().isEmpty()) {
+            _uiAlert.value = UiAlert(
+                title = "Input Required",
+                message = "Please enter your registered email address and a new password.",
+                isSuccess = false
             )
             return
         }
-
-        val repo = _uiState.value.selectedRepository
-        if (repo == null) {
-            _uiState.value = _uiState.value.copy(
-                activeBuildState = ActiveBuildState.Failed(null, "No build repository selected. Please create or select a repository.")
-            )
-            return
+        viewModelScope.launch {
+            val res = repository.resetPasswordDirectly(targetEmail, newPass.trim())
+            res.onSuccess {
+                _uiAlert.value = UiAlert(
+                    title = "Password Reset Successful",
+                    message = "Password for $targetEmail has been updated! Please sign in with your new password.",
+                    isSuccess = true
+                )
+            }.onFailure { err ->
+                _uiAlert.value = UiAlert(
+                    title = "Reset Failed",
+                    message = err.message ?: "Account not found or password too short.",
+                    isSuccess = false
+                )
+            }
         }
+    }
 
-        val project = _uiState.value.selectedProject
-        if (project == null || !project.isValid) {
-            _uiState.value = _uiState.value.copy(
-                activeBuildState = ActiveBuildState.Failed(null, "No valid Android project selected. Please pick a valid project folder.")
-            )
-            return
+    fun logout() {
+        viewModelScope.launch {
+            repository.logoutUser()
+            _currentScreen.value = Screen.Login
         }
+    }
 
-        val dispatchStartTimeMillis = System.currentTimeMillis()
+    fun changePassword(currentPass: String, newPass: String) {
+        val user = loggedInUser.value ?: return
+        viewModelScope.launch {
+            val res = repository.changePassword(user.email, currentPass, newPass)
+            res.onSuccess {
+                _uiAlert.value = UiAlert(
+                    title = "Password Updated",
+                    message = "Your password has been changed successfully.",
+                    isSuccess = true
+                )
+            }.onFailure { err ->
+                _uiAlert.value = UiAlert(
+                    title = "Password Change Failed",
+                    message = err.message ?: "Could not change password.",
+                    isSuccess = false
+                )
+            }
+        }
+    }
+
+    fun deleteAccount() {
+        val user = loggedInUser.value ?: return
+        viewModelScope.launch {
+            repository.deleteAccount(user.email)
+            _uiAlert.value = UiAlert(
+                title = "Account Deleted",
+                message = "Your account and data have been permanently removed.",
+                isSuccess = true
+            )
+            _currentScreen.value = Screen.Login
+        }
+    }
+
+    fun updateProfile(fname: String, lname: String, ffUid: String, whatsapp: String) {
+        val user = loggedInUser.value ?: return
+        viewModelScope.launch {
+            val res = repository.updateProfileInfo(user.email, fname, lname, ffUid, whatsapp)
+            res.onSuccess {
+                _uiAlert.value = UiAlert(
+                    title = "Profile Saved",
+                    message = "Your gamer profile details have been updated.",
+                    isSuccess = true
+                )
+            }
+        }
+    }
+
+    // --- Wallet Actions ---
+    fun submitRecharge(amount: Double, transactionId: String) {
+        val user = loggedInUser.value ?: return
+        viewModelScope.launch {
+            val res = repository.submitRecharge(user.email, amount, transactionId)
+            res.onSuccess {
+                _uiAlert.value = UiAlert(
+                    title = "Recharge Submitted",
+                    message = "Transaction ID $transactionId submitted! Admin is reviewing your bKash payment.",
+                    isSuccess = true
+                )
+            }.onFailure { err ->
+                _uiAlert.value = UiAlert(
+                    title = "Recharge Error",
+                    message = err.message ?: "Could not submit recharge.",
+                    isSuccess = false
+                )
+            }
+        }
+    }
+
+    // --- Tournament Actions ---
+    fun registerTournament(
+        tournamentId: String,
+        ffUid: String,
+        fname: String,
+        lname: String,
+        squadName: String,
+        playerUsernames: String,
+        whatsapp: String
+    ) {
+        val user = loggedInUser.value ?: return
+        viewModelScope.launch {
+            val res = repository.registerForTournament(
+                tournamentId = tournamentId,
+                userEmail = user.email,
+                ffUid = ffUid,
+                firstName = fname,
+                lastName = lname,
+                squadName = squadName,
+                playerUsernames = playerUsernames,
+                whatsapp = whatsapp
+            )
+            res.onSuccess {
+                _uiAlert.value = UiAlert(
+                    title = "Registration Successful!",
+                    message = "Welcome to the tournament! You now have private access to Tournament Info & Room ID.",
+                    isSuccess = true
+                )
+                _currentScreen.value = Screen.TournamentDetail(tournamentId)
+            }.onFailure { err ->
+                if (err.message == "INSUFFICIENT_FUNDS") {
+                    _showRechargePrompt.value = true
+                } else {
+                    _uiAlert.value = UiAlert(
+                        title = "Registration Failed",
+                        message = err.message ?: "Could not complete registration.",
+                        isSuccess = false
+                    )
+                }
+            }
+        }
+    }
+
+    // --- Chat Actions ---
+    fun sendChatMessage(
+        chatContext: String,
+        message: String,
+        imageUri: String? = null
+    ) {
+        val user = loggedInUser.value
+        val senderEmail = user?.email ?: "guest@gaming.com"
+        val senderName = if (user != null) "${user.firstName} (${user.email})" else "Guest User"
+        val isAdmin = _isAdminMode.value
 
         viewModelScope.launch {
-            try {
-                // Step 1: Upload project
-                _uiState.value = _uiState.value.copy(
-                    activeBuildState = ActiveBuildState.UploadingProject("Preparing project files...", 0.05f)
-                )
-
-                val uploadResult = projectUploader.uploadProjectToRepo(
-                    token = auth.token,
-                    owner = repo.owner?.login ?: auth.user.login,
-                    repo = repo.name,
-                    branch = repo.defaultBranch ?: "main",
-                    projectInfo = project,
-                    onProgress = { step, percent ->
-                        _uiState.value = _uiState.value.copy(
-                            activeBuildState = ActiveBuildState.UploadingProject(step, percent)
-                        )
-                    }
-                )
-
-                if (uploadResult.isFailure) {
-                    val err = uploadResult.exceptionOrNull()?.localizedMessage ?: "Project upload failed."
-                    _uiState.value = _uiState.value.copy(
-                        activeBuildState = ActiveBuildState.Failed(null, "Upload failed: $err")
-                    )
-                    return@launch
-                }
-
-                val newCommitSha = uploadResult.getOrNull()
-
-                // Step 2: Detect or trigger GitHub Actions workflow run
-                _uiState.value = _uiState.value.copy(activeBuildState = ActiveBuildState.TriggeringWorkflow)
-
-                var selectedWf = _uiState.value.selectedWorkflow
-                if (selectedWf == null) {
-                    val ensureRes = buildEngine.ensureWorkflowExists(
-                        auth.token, repo.owner?.login ?: auth.user.login, repo.name, repo.defaultBranch ?: "main"
-                    )
-                    selectedWf = ensureRes.getOrNull()
-                }
-
-                val workflowFileNameOrId = selectedWf?.path?.substringAfterLast("/")
-                    ?: selectedWf?.id?.toString()
-                    ?: "android.yml"
-
-                val triggerResult = buildEngine.findOrTriggerRun(
-                    token = auth.token,
-                    owner = repo.owner?.login ?: auth.user.login,
-                    repo = repo.name,
-                    workflowFileNameOrId = workflowFileNameOrId,
-                    headSha = newCommitSha,
-                    branch = repo.defaultBranch ?: "main",
-                    dispatchStartTimeMillis = dispatchStartTimeMillis,
-                    buildType = _uiState.value.buildType
-                )
-
-                if (triggerResult.isFailure) {
-                    val err = triggerResult.exceptionOrNull()?.localizedMessage ?: "Failed to find or trigger workflow run."
-                    _uiState.value = _uiState.value.copy(
-                        activeBuildState = ActiveBuildState.Failed(null, "Workflow run error: $err")
-                    )
-                    return@launch
-                }
-
-                val runId = triggerResult.getOrThrow()
-
-                // Insert into DB
-                val historyId = buildHistoryDao.insertBuild(
-                    BuildHistoryEntity(
-                        projectName = project.projectName,
-                        buildType = _uiState.value.buildType,
-                        workflowRunId = runId,
-                        status = "BUILDING",
-                        repositoryName = repo.fullName
-                    )
-                )
-
-                // Step 3: Start polling
-                pollWorkflowStatus(auth.token, repo.owner?.login ?: auth.user.login, repo.name, runId, historyId)
-
-            } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(
-                    activeBuildState = ActiveBuildState.Failed(null, "Unexpected build error: ${e.localizedMessage}")
-                )
-            }
-        }
-    }
-
-    private fun pollWorkflowStatus(token: String, owner: String, repo: String, runId: Long, historyId: Long) {
-        pollingJob?.cancel()
-        pollingJob = viewModelScope.launch {
-            var attempts = 0
-            val maxAttempts = 120 // max 10 mins
-
-            while (attempts < maxAttempts) {
-                val statusResult = buildEngine.pollBuildStatus(token, owner, repo, runId)
-
-                if (statusResult.isSuccess) {
-                    val run = statusResult.getOrThrow()
-                    _uiState.value = _uiState.value.copy(
-                        activeBuildState = ActiveBuildState.PollingStatus(runId, run.status, run.conclusion)
-                    )
-
-                    if (run.status == "completed") {
-                        if (run.conclusion == "success") {
-                            // Download artifact
-                            _uiState.value = _uiState.value.copy(
-                                activeBuildState = ActiveBuildState.DownloadingArtifact(runId)
-                            )
-
-                            val outputDir = File(getApplication<Application>().cacheDir, "apks/$runId")
-                            val downloadRes = buildEngine.downloadApkArtifact(token, owner, repo, runId, outputDir)
-
-                            if (downloadRes.isSuccess) {
-                                val apkFile = downloadRes.getOrThrow()
-                                val artifactName = apkFile.name
-
-                                buildHistoryDao.insertBuild(
-                                    BuildHistoryEntity(
-                                        id = historyId,
-                                        projectName = _uiState.value.selectedProject?.projectName ?: "Android Project",
-                                        buildType = _uiState.value.buildType,
-                                        workflowRunId = runId,
-                                        status = "SUCCESS",
-                                        artifactName = artifactName,
-                                        apkPath = apkFile.absolutePath,
-                                        repositoryName = "$owner/$repo"
-                                    )
-                                )
-
-                                _uiState.value = _uiState.value.copy(
-                                    activeBuildState = ActiveBuildState.Success(runId, apkFile, artifactName)
-                                )
-                            } else {
-                                val err = downloadRes.exceptionOrNull()?.localizedMessage ?: "Failed to download APK artifact."
-                                buildHistoryDao.insertBuild(
-                                    BuildHistoryEntity(
-                                        id = historyId,
-                                        projectName = _uiState.value.selectedProject?.projectName ?: "Android Project",
-                                        buildType = _uiState.value.buildType,
-                                        workflowRunId = runId,
-                                        status = "FAILED",
-                                        errorMessage = err,
-                                        repositoryName = "$owner/$repo"
-                                    )
-                                )
-                                _uiState.value = _uiState.value.copy(
-                                    activeBuildState = ActiveBuildState.Failed(runId, err)
-                                )
-                            }
-                        } else {
-                            // Workflow failed
-                            val logRes = buildEngine.getBuildLogs(token, owner, repo, runId)
-                            val logs = logRes.getOrNull() ?: "Workflow execution failed on GitHub Actions."
-
-                            buildHistoryDao.insertBuild(
-                                BuildHistoryEntity(
-                                    id = historyId,
-                                    projectName = _uiState.value.selectedProject?.projectName ?: "Android Project",
-                                    buildType = _uiState.value.buildType,
-                                    workflowRunId = runId,
-                                    status = "FAILED",
-                                    errorMessage = "Workflow failed with conclusion: ${run.conclusion}",
-                                    repositoryName = "$owner/$repo"
-                                )
-                            )
-
-                            _uiState.value = _uiState.value.copy(
-                                activeBuildState = ActiveBuildState.Failed(runId, "GitHub Actions build failed during Gradle execution.", logs)
-                            )
-                        }
-                        break
-                    }
-                }
-
-                delay(5000) // Poll every 5s
-                attempts++
-            }
-        }
-    }
-
-    fun openLogsModal(runId: Long?, repositoryName: String? = null) {
-        val auth = authManager.authState.value as? AuthState.Authenticated
-        var targetOwner = _uiState.value.selectedRepository?.owner?.login ?: auth?.user?.login
-        var targetRepo = _uiState.value.selectedRepository?.name
-
-        if (!repositoryName.isNullOrEmpty() && repositoryName.contains("/")) {
-            targetOwner = repositoryName.substringBefore("/")
-            targetRepo = repositoryName.substringAfter("/")
-        }
-
-        if (auth != null && targetOwner != null && targetRepo != null && runId != null) {
-            viewModelScope.launch {
-                val logsRes = buildEngine.getBuildLogs(auth.token, targetOwner, targetRepo, runId)
-                val text = logsRes.getOrNull() ?: "Unable to fetch logs for run #$runId"
-                _uiState.value = _uiState.value.copy(buildLogsText = text, showLogsModal = true)
-            }
-        } else {
-            _uiState.value = _uiState.value.copy(
-                buildLogsText = _uiState.value.buildLogsText ?: "No logs available for this build run.",
-                showLogsModal = true
+            val res = repository.sendChatMessage(
+                chatContext = chatContext,
+                senderEmail = if (isAdmin) "admin@gaming.com" else senderEmail,
+                senderName = if (isAdmin) "Tournament Admin" else senderName,
+                isAdmin = isAdmin,
+                message = message,
+                imageUri = imageUri
             )
-        }
-    }
-
-    fun closeLogsModal() {
-        _uiState.value = _uiState.value.copy(showLogsModal = false)
-    }
-
-    fun installApk(file: File) {
-        apkInstaller.installApk(file)
-    }
-
-    fun shareApk(file: File) {
-        apkInstaller.shareApk(file)
-    }
-
-    fun saveApkToDownloads(file: File) {
-        apkInstaller.saveToDownloads(file)
-    }
-
-    fun cancelBuild() {
-        pollingJob?.cancel()
-        val auth = authManager.authState.value as? AuthState.Authenticated
-        val repo = _uiState.value.selectedRepository
-        val active = _uiState.value.activeBuildState
-
-        val runId = when (active) {
-            is ActiveBuildState.PollingStatus -> active.runId
-            is ActiveBuildState.DownloadingArtifact -> active.runId
-            else -> null
-        }
-
-        if (auth != null && repo != null && runId != null) {
-            viewModelScope.launch {
-                val owner = repo.owner?.login ?: auth.user.login
-                buildEngine.cancelBuild(auth.token, owner, repo.name, runId)
-                _uiState.value = _uiState.value.copy(
-                    activeBuildState = ActiveBuildState.Failed(runId, "Build Cancelled by User")
+            res.onFailure { err ->
+                _uiAlert.value = UiAlert(
+                    title = "Message Not Sent",
+                    message = err.message ?: "Failed to send message.",
+                    isSuccess = false
                 )
             }
-        } else {
-            _uiState.value = _uiState.value.copy(
-                activeBuildState = ActiveBuildState.Failed(null, "Build Cancelled by User")
-            )
         }
     }
 
-    fun resetActiveBuildState() {
-        _uiState.value = _uiState.value.copy(activeBuildState = ActiveBuildState.Idle)
-    }
-
-    fun clearBuildHistory() {
+    fun editChatMessage(messageId: Long, newText: String) {
         viewModelScope.launch {
-            buildHistoryDao.clearAll()
+            repository.editChatMessage(messageId, newText)
+        }
+    }
+
+    // --- Admin Actions ---
+    fun adminApproveTransaction(txId: Long, approve: Boolean) {
+        viewModelScope.launch {
+            repository.verifyTransactionByAdmin(txId, approve)
+            _uiAlert.value = UiAlert(
+                title = if (approve) "Transaction Verified" else "Transaction Rejected",
+                message = if (approve) "Wallet balance credited to user account." else "Transaction status set to REJECTED.",
+                isSuccess = approve
+            )
+        }
+    }
+
+    fun adminPostNotice(title: String, content: String, isLoginScreen: Boolean, targetEmail: String? = null) {
+        viewModelScope.launch {
+            repository.postNotice(
+                NoticeEntity(
+                    title = title,
+                    content = content,
+                    date = "2026-08-08",
+                    isForLoginScreen = isLoginScreen,
+                    targetEmail = if (targetEmail.isNullOrEmpty()) null else targetEmail
+                )
+            )
+            _uiAlert.value = UiAlert(
+                title = "Notice Broadcasted",
+                message = "Global notice has been published.",
+                isSuccess = true
+            )
+        }
+    }
+
+    fun adminUpdateRoomInfo(tournamentId: String, roomId: String, roomPass: String) {
+        viewModelScope.launch {
+            repository.updateTournamentRoomInfo(tournamentId, roomId, roomPass)
+            _uiAlert.value = UiAlert(
+                title = "Room Credentials Set",
+                message = "Room ID: $roomId & Pass: $roomPass are now visible to joined participants.",
+                isSuccess = true
+            )
+        }
+    }
+
+    fun adminPinTournamentImage(tournamentId: String, imageUri: String?) {
+        viewModelScope.launch {
+            repository.updateTournamentPinnedImage(tournamentId, imageUri)
+            _uiAlert.value = UiAlert(
+                title = "Banner Pinned",
+                message = "Banner image is now pinned on the Home screen for players.",
+                isSuccess = true
+            )
         }
     }
 }

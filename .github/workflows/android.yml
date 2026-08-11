@@ -2,41 +2,71 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build Type (debug or release)'
+        required: false
+        default: 'debug'
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
 
-    - name: Find and setup gradlew
-      run: find . -name "gradlew" -exec chmod +x {} + || true
+      - name: Find Gradle wrapper
+        shell: bash
+        run: |
+          set -e
 
-    - name: Generate dummy debug keystore
-      run: keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "C=US, O=Android, CN=Android Debug"
+          GRADLEW="$(find . -type f -name gradlew -print -quit)"
 
-    - name: Build Debug APK
-      run: |
-        if [ -f "gradlew" ]; then
-          ./gradlew assembleDebug
-        elif [ -d "android" ] && [ -f "android/gradlew" ]; then
-          cd android && ./gradlew assembleDebug
-        else
-          gradle assembleDebug
-        fi
+          if [ -z "$GRADLEW" ]; then
+            echo "::error::Gradle wrapper not found"
+            exit 1
+          fi
 
-    - name: Upload all APKs
-      uses: actions/upload-artifact@v4
-      with:
-        name: my-android-app
-        path: '**/*.apk'
+          chmod +x "$GRADLEW"
+
+          PROJECT_DIR="$(dirname "$GRADLEW")"
+
+          echo "GRADLEW=$GRADLEW" >> "$GITHUB_ENV"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Build Debug APK
+        if: ${{ github.event.inputs.build_type == 'debug' || github.event.inputs.build_type == '' || github.event_name == 'push' }}
+        shell: bash
+        run: |
+          set -e
+          echo "Using Gradle wrapper: $GRADLEW"
+          cd "$PROJECT_DIR"
+          "$GRADLEW" --no-daemon --stacktrace --warning-mode all assembleDebug
+
+      - name: Build Release APK
+        if: ${{ github.event.inputs.build_type == 'release' }}
+        shell: bash
+        run: |
+          set -e
+          echo "Using Gradle wrapper: $GRADLEW"
+          cd "$PROJECT_DIR"
+          "$GRADLEW" --no-daemon --stacktrace --warning-mode all assembleRelease
+
+      - name: Upload APKs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apks
+          path: |
+            **/build/outputs/apk/**/*.apk
+            **/build/outputs/apk/**/*.aab
+          if-no-files-found: warn

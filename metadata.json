@@ -1,6 +1,6 @@
 {
-  "name": "Native APK Builder",
-  "description": "Build real Android APKs directly from your phone using GitHub Actions.",
+  "name": "Tournament Gaming Platform",
+  "description": "Tournament gaming user app with in-app wallet, automated registration, live chat, device monitoring, and admin notice integration.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

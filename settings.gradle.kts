@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "Native APK Builder"
+rootProject.name = "TournamentGaming"
 
 include(":app")

@@ -1,159 +1,142 @@
 package com.example
 
-import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import com.example.data.auth.AuthState
-import com.example.ui.components.LogViewerModal
-import com.example.ui.screens.BuildHistoryScreen
-import com.example.ui.screens.GitHubConnectScreen
-import com.example.ui.screens.MainBuildScreen
-import com.example.ui.screens.SettingsScreen
-import com.example.ui.theme.MyApplicationTheme
+import com.example.ui.components.*
+import com.example.ui.screens.*
+import com.example.ui.theme.TournamentGamingTheme
 import com.example.ui.viewmodel.MainViewModel
+import com.example.ui.viewmodel.Screen
 
 class MainActivity : ComponentActivity() {
 
     private val viewModel: MainViewModel by viewModels()
 
-    @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
         setContent {
-            MyApplicationTheme {
-                val uiState by viewModel.uiState.collectAsState()
+            TournamentGamingTheme {
+                val currentScreen by viewModel.currentScreen.collectAsState()
+                val currentUser by viewModel.loggedInUser.collectAsState()
+                val uiAlert by viewModel.uiAlert.collectAsState()
+                val showRechargePrompt by viewModel.showRechargePrompt.collectAsState()
+                val isAdminMode by viewModel.isAdminMode.collectAsState()
+
+                val loginNotices by viewModel.loginNotices.collectAsState()
+                val userNotices by viewModel.userNotices.collectAsState()
+                val userTransactions by viewModel.userTransactions.collectAsState()
+                val allTransactions by viewModel.allTransactions.collectAsState()
+                val tournaments by viewModel.tournaments.collectAsState()
+                val userRegistrations by viewModel.userRegistrations.collectAsState()
+                val userDeviceLog by viewModel.userDeviceLog.collectAsState()
+                val allDeviceLogs by viewModel.allDeviceLogs.collectAsState()
 
                 Scaffold(
-                    modifier = Modifier.fillMaxSize(),
                     topBar = {
-                        TopAppBar(
-                            title = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        Icons.Default.Build,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Text(
-                                        text = "Native APK Builder",
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            },
-                            actions = {
-                                val auth = uiState.authState
-                                if (auth is AuthState.Authenticated) {
-                                    Surface(
-                                        color = Color(0xFF10B981).copy(alpha = 0.15f),
-                                        shape = CircleShape,
-                                        onClick = { viewModel.selectTab(2) }
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(8.dp)
-                                                    .clip(CircleShape)
-                                                    .background(Color(0xFF10B981))
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text(
-                                                text = "@${auth.user.login}",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = Color(0xFF10B981),
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                        }
-                                    }
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                } else {
-                                    IconButton(onClick = { viewModel.selectTab(2) }) {
-                                        Icon(
-                                            Icons.Default.AccountCircle,
-                                            contentDescription = "GitHub Account",
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                            }
-                        )
-                    },
-                    bottomBar = {
-                        NavigationBar {
-                            NavigationBarItem(
-                                selected = uiState.currentTab == 0,
-                                onClick = { viewModel.selectTab(0) },
-                                icon = { Icon(Icons.Default.Build, contentDescription = "Build") },
-                                label = { Text("Build") }
-                            )
-                            NavigationBarItem(
-                                selected = uiState.currentTab == 1,
-                                onClick = { viewModel.selectTab(1) },
-                                icon = { Icon(Icons.Default.History, contentDescription = "History") },
-                                label = { Text("History") }
-                            )
-                            NavigationBarItem(
-                                selected = uiState.currentTab == 2,
-                                onClick = { viewModel.selectTab(2) },
-                                icon = { Icon(Icons.Default.Link, contentDescription = "GitHub") },
-                                label = { Text("GitHub") }
-                            )
-                            NavigationBarItem(
-                                selected = uiState.currentTab == 3,
-                                onClick = { viewModel.selectTab(3) },
-                                icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
-                                label = { Text("Settings") }
+                        if (currentScreen !is Screen.Login && currentUser != null) {
+                            GamerTopAppBar(
+                                walletBalance = currentUser?.walletBalance ?: 0.0,
+                                isAdminMode = isAdminMode,
+                                onWalletClick = { viewModel.navigateTo(Screen.Wallet) },
+                                onChatClick = { viewModel.navigateTo(Screen.LiveChat("GENERAL")) },
+                                onAdminToggle = { viewModel.toggleAdminMode() },
+                                onProfileClick = { viewModel.navigateTo(Screen.Profile) }
                             )
                         }
-                    }
+                    },
+                    bottomBar = {
+                        if (currentScreen !is Screen.Login && currentUser != null) {
+                            CustomBottomNavBar(
+                                currentScreen = currentScreen,
+                                onNavigate = { screen -> viewModel.navigateTo(screen) }
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
                 ) { innerPadding ->
-                    Box(modifier = Modifier.padding(innerPadding)) {
-                        when (uiState.currentTab) {
-                            0 -> MainBuildScreen(
-                                viewModel = viewModel,
-                                uiState = uiState,
-                                onNavigateToGitHub = { viewModel.selectTab(2) }
-                            )
-                            1 -> BuildHistoryScreen(
-                                viewModel = viewModel,
-                                uiState = uiState
-                            )
-                            2 -> GitHubConnectScreen(
-                                viewModel = viewModel,
-                                uiState = uiState
-                            )
-                            3 -> SettingsScreen(
-                                viewModel = viewModel,
-                                uiState = uiState
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(innerPadding)
+                    ) {
+                        when (val screen = currentScreen) {
+                            is Screen.Login -> {
+                                LoginScreen(
+                                    viewModel = viewModel,
+                                    loginNotices = loginNotices
+                                )
+                            }
+                            is Screen.Home -> {
+                                HomeScreen(
+                                    viewModel = viewModel,
+                                    tournaments = tournaments,
+                                    notices = userNotices,
+                                    userRegistrations = userRegistrations
+                                )
+                            }
+                            is Screen.TournamentDetail -> {
+                                TournamentDetailScreen(
+                                    tournamentId = screen.tournamentId,
+                                    viewModel = viewModel,
+                                    currentUser = currentUser
+                                )
+                            }
+                            is Screen.Wallet -> {
+                                WalletScreen(
+                                    viewModel = viewModel,
+                                    currentUser = currentUser,
+                                    transactions = userTransactions
+                                )
+                            }
+                            is Screen.LiveChat -> {
+                                LiveChatScreen(
+                                    contextKey = screen.contextKey,
+                                    viewModel = viewModel,
+                                    currentUser = currentUser,
+                                    isAdminMode = isAdminMode
+                                )
+                            }
+                            is Screen.Profile -> {
+                                ProfileScreen(
+                                    viewModel = viewModel,
+                                    currentUser = currentUser,
+                                    deviceLog = userDeviceLog
+                                )
+                            }
+                            is Screen.AdminPanel -> {
+                                AdminPanelScreen(
+                                    viewModel = viewModel,
+                                    allTransactions = allTransactions,
+                                    tournaments = tournaments,
+                                    allDeviceLogs = allDeviceLogs
+                                )
+                            }
+                        }
+
+                        // Render Professional Alert Dialog
+                        uiAlert?.let { alert ->
+                            ProfessionalAlertCard(
+                                alert = alert,
+                                onDismiss = { viewModel.dismissAlert() }
                             )
                         }
 
-                        if (uiState.showLogsModal) {
-                            LogViewerModal(
-                                logText = uiState.buildLogsText,
-                                onDismiss = { viewModel.closeLogsModal() }
+                        // Render "Not enough credit. Wanna recharge?" Prompt
+                        if (showRechargePrompt) {
+                            InsufficientCreditDialog(
+                                onDismiss = { viewModel.showRechargePrompt(false) },
+                                onRechargeConfirm = { viewModel.navigateTo(Screen.Wallet) }
                             )
                         }
                     }
